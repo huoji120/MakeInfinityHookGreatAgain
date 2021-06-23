@@ -101,11 +101,15 @@ static INFINITYHOOKCALLBACK IfhpCallback = NULL;
 static const void* EtwpDebuggerData = NULL;
 static PVOID CkclWmiLoggerContext = NULL;
 static PVOID SystemCallEntryPage = NULL;
+/*
 typedef NTSTATUS(NTAPI* PFHalpTimerQueryHostPerformanceCounter)(ULONG64* pTime);
-
 PFHalpTimerQueryHostPerformanceCounter OldPtrOff140C009E0 = 0;
-ULONG64 PtrOff140C009E0 = 0;
+*/
+typedef __int64(*PFHvlGetQpcBias)();
+PFHvlGetQpcBias OldPtrOff140C009E0 = 0;
 
+ULONG64 PtrOff140C009E0 = 0;
+ULONG64 HvlpReferenceTscPage = 0;
 NTSTATUS UtilSearchPattern(IN PCUCHAR pattern, IN UCHAR wildcard, IN ULONG_PTR len, IN const VOID* base, IN ULONG_PTR size, OUT PVOID* ppFound)
 {
 	NT_ASSERT(ppFound != NULL && pattern != NULL && base != NULL);
@@ -168,6 +172,16 @@ NTSTATUS UtilScanSection(IN PCCHAR section, IN PCUCHAR pattern, IN UCHAR wildcar
 
 	return STATUS_NOT_FOUND;
 }
+extern "C" __int64 HookHvlGetQpcBias()
+{
+	//__debugbreak();
+	if (ExGetPreviousMode() != KernelMode)
+	{
+		IfhpInternalGetCpuClock();
+	}
+	return *((ULONG64*)(*((ULONG64*)HvlpReferenceTscPage)) + 3);
+}
+/*
 extern "C" __int64 __fastcall HookHalpTimerQueryHostPerformanceCounter(ULONG64 * pTime)
 {
 	if (ExGetPreviousMode() != KernelMode)
@@ -178,6 +192,7 @@ extern "C" __int64 __fastcall HookHalpTimerQueryHostPerformanceCounter(ULONG64 *
 	
 	return OldPtrOff140C009E0(pTime);
 }
+*/
 /*
 *	Initialize infinity hook: executes your user defined callback on 
 *	each syscall. You can extend this functionality to do other things
@@ -230,188 +245,35 @@ NTSTATUS IfhInitialize(_In_
 	}
 
 	IfhpCallback = InfinityHookCallback;
-
-	//
-	// CkclWmiLoggerContext is a WMI_LOGGER_CONTEXT structure:
-	//
-	/*
-		0: kd> dt nt!_WMI_LOGGER_CONTEXT
-			   +0x000 LoggerId         : Uint4B
-			   +0x004 BufferSize       : Uint4B
-			   +0x008 MaximumEventSize : Uint4B
-			   +0x00c LoggerMode       : Uint4B
-			   +0x010 AcceptNewEvents  : Int4B
-			   +0x014 EventMarker      : [2] Uint4B
-			   +0x01c ErrorMarker      : Uint4B
-			   +0x020 SizeMask         : Uint4B
-			   +0x028 GetCpuClock      : Ptr64     int64
-			   +0x030 LoggerThread     : Ptr64 _ETHREAD
-			   +0x038 LoggerStatus     : Int4B
-			   +0x03c FailureReason    : Uint4B
-			   +0x040 BufferQueue      : _ETW_BUFFER_QUEUE
-			   +0x050 OverflowQueue    : _ETW_BUFFER_QUEUE
-			   +0x060 GlobalList       : _LIST_ENTRY
-			   +0x070 DebugIdTrackingList : _LIST_ENTRY
-			   +0x080 DecodeControlList : Ptr64 _ETW_DECODE_CONTROL_ENTRY
-			   +0x088 DecodeControlCount : Uint4B
-			   +0x090 BatchedBufferList : Ptr64 _WMI_BUFFER_HEADER
-			   +0x090 CurrentBuffer    : _EX_FAST_REF
-			   +0x098 LoggerName       : _UNICODE_STRING
-			   +0x0a8 LogFileName      : _UNICODE_STRING
-			   +0x0b8 LogFilePattern   : _UNICODE_STRING
-			   +0x0c8 NewLogFileName   : _UNICODE_STRING
-			   +0x0d8 ClockType        : Uint4B
-			   +0x0dc LastFlushedBuffer : Uint4B
-			   +0x0e0 FlushTimer       : Uint4B
-			   +0x0e4 FlushThreshold   : Uint4B
-			   +0x0e8 ByteOffset       : _LARGE_INTEGER
-			   +0x0f0 MinimumBuffers   : Uint4B
-			   +0x0f4 BuffersAvailable : Int4B
-			   +0x0f8 NumberOfBuffers  : Int4B
-			   +0x0fc MaximumBuffers   : Uint4B
-			   +0x100 EventsLost       : Uint4B
-			   +0x104 PeakBuffersCount : Int4B
-			   +0x108 BuffersWritten   : Uint4B
-			   +0x10c LogBuffersLost   : Uint4B
-			   +0x110 RealTimeBuffersDelivered : Uint4B
-			   +0x114 RealTimeBuffersLost : Uint4B
-			   +0x118 SequencePtr      : Ptr64 Int4B
-			   +0x120 LocalSequence    : Uint4B
-			   +0x124 InstanceGuid     : _GUID
-			   +0x134 MaximumFileSize  : Uint4B
-			   +0x138 FileCounter      : Int4B
-			   +0x13c PoolType         : _POOL_TYPE
-			   +0x140 ReferenceTime    : _ETW_REF_CLOCK
-			   +0x150 CollectionOn     : Int4B
-			   +0x154 ProviderInfoSize : Uint4B
-			   +0x158 Consumers        : _LIST_ENTRY
-			   +0x168 NumConsumers     : Uint4B
-			   +0x170 TransitionConsumer : Ptr64 _ETW_REALTIME_CONSUMER
-			   +0x178 RealtimeLogfileHandle : Ptr64 Void
-			   +0x180 RealtimeLogfileName : _UNICODE_STRING
-			   +0x190 RealtimeWriteOffset : _LARGE_INTEGER
-			   +0x198 RealtimeReadOffset : _LARGE_INTEGER
-			   +0x1a0 RealtimeLogfileSize : _LARGE_INTEGER
-			   +0x1a8 RealtimeLogfileUsage : Uint8B
-			   +0x1b0 RealtimeMaximumFileSize : Uint8B
-			   +0x1b8 RealtimeBuffersSaved : Uint4B
-			   +0x1c0 RealtimeReferenceTime : _ETW_REF_CLOCK
-			   +0x1d0 NewRTEventsLost  : _ETW_RT_EVENT_LOSS
-			   +0x1d8 LoggerEvent      : _KEVENT
-			   +0x1f0 FlushEvent       : _KEVENT
-			   +0x208 FlushTimeOutTimer : _KTIMER
-			   +0x248 LoggerDpc        : _KDPC
-			   +0x288 LoggerMutex      : _KMUTANT
-			   +0x2c0 LoggerLock       : _EX_PUSH_LOCK
-			   +0x2c8 BufferListSpinLock : Uint8B
-			   +0x2c8 BufferListPushLock : _EX_PUSH_LOCK
-			   +0x2d0 ClientSecurityContext : _SECURITY_CLIENT_CONTEXT
-			   +0x318 TokenAccessInformation : Ptr64 _TOKEN_ACCESS_INFORMATION
-			   +0x320 SecurityDescriptor : _EX_FAST_REF
-			   +0x328 StartTime        : _LARGE_INTEGER
-			   +0x330 LogFileHandle    : Ptr64 Void
-			   +0x338 BufferSequenceNumber : Int8B
-			   +0x340 Flags            : Uint4B
-			   +0x340 Persistent       : Pos 0, 1 Bit
-			   +0x340 AutoLogger       : Pos 1, 1 Bit
-			   +0x340 FsReady          : Pos 2, 1 Bit
-			   +0x340 RealTime         : Pos 3, 1 Bit
-			   +0x340 Wow              : Pos 4, 1 Bit
-			   +0x340 KernelTrace      : Pos 5, 1 Bit
-			   +0x340 NoMoreEnable     : Pos 6, 1 Bit
-			   +0x340 StackTracing     : Pos 7, 1 Bit
-			   +0x340 ErrorLogged      : Pos 8, 1 Bit
-			   +0x340 RealtimeLoggerContextFreed : Pos 9, 1 Bit
-			   +0x340 PebsTracing      : Pos 10, 1 Bit
-			   +0x340 PmcCounters      : Pos 11, 1 Bit
-			   +0x340 PageAlignBuffers : Pos 12, 1 Bit
-			   +0x340 StackLookasideListAllocated : Pos 13, 1 Bit
-			   +0x340 SecurityTrace    : Pos 14, 1 Bit
-			   +0x340 LastBranchTracing : Pos 15, 1 Bit
-			   +0x340 SystemLoggerIndex : Pos 16, 8 Bits
-			   +0x340 StackCaching     : Pos 24, 1 Bit
-			   +0x340 ProviderTracking : Pos 25, 1 Bit
-			   +0x340 ProcessorTrace   : Pos 26, 1 Bit
-			   +0x340 QpcDeltaTracking : Pos 27, 1 Bit
-			   +0x340 MarkerBufferSaved : Pos 28, 1 Bit
-			   +0x340 SpareFlags2      : Pos 29, 3 Bits
-			   +0x344 RequestFlag      : Uint4B
-			   +0x344 DbgRequestNewFile : Pos 0, 1 Bit
-			   +0x344 DbgRequestUpdateFile : Pos 1, 1 Bit
-			   +0x344 DbgRequestFlush  : Pos 2, 1 Bit
-			   +0x344 DbgRequestDisableRealtime : Pos 3, 1 Bit
-			   +0x344 DbgRequestDisconnectConsumer : Pos 4, 1 Bit
-			   +0x344 DbgRequestConnectConsumer : Pos 5, 1 Bit
-			   +0x344 DbgRequestNotifyConsumer : Pos 6, 1 Bit
-			   +0x344 DbgRequestUpdateHeader : Pos 7, 1 Bit
-			   +0x344 DbgRequestDeferredFlush : Pos 8, 1 Bit
-			   +0x344 DbgRequestDeferredFlushTimer : Pos 9, 1 Bit
-			   +0x344 DbgRequestFlushTimer : Pos 10, 1 Bit
-			   +0x344 DbgRequestUpdateDebugger : Pos 11, 1 Bit
-			   +0x344 DbgSpareRequestFlags : Pos 12, 20 Bits
-			   +0x350 StackTraceBlock  : _ETW_STACK_TRACE_BLOCK
-			   +0x3d0 HookIdMap        : _RTL_BITMAP
-			   +0x3e0 StackCache       : Ptr64 _ETW_STACK_CACHE
-			   +0x3e8 PmcData          : Ptr64 _ETW_PMC_SUPPORT
-			   +0x3f0 LbrData          : Ptr64 _ETW_LBR_SUPPORT
-			   +0x3f8 IptData          : Ptr64 _ETW_IPT_SUPPORT
-			   +0x400 BinaryTrackingList : _LIST_ENTRY
-			   +0x410 ScratchArray     : Ptr64 Ptr64 _WMI_BUFFER_HEADER
-			   +0x418 DisallowedGuids  : _DISALLOWED_GUIDS
-			   +0x428 RelativeTimerDueTime : Int8B
-			   +0x430 PeriodicCaptureStateGuids : _PERIODIC_CAPTURE_STATE_GUIDS
-			   +0x440 PeriodicCaptureStateTimer : Ptr64 _EX_TIMER
-			   +0x448 PeriodicCaptureStateTimerState : _ETW_PERIODIC_TIMER_STATE
-			   +0x450 SoftRestartContext : Ptr64 _ETW_SOFT_RESTART_CONTEXT
-			   +0x458 SiloState        : Ptr64 _ETW_SILODRIVERSTATE
-			   +0x460 CompressionWorkItem : _WORK_QUEUE_ITEM
-			   +0x480 CompressionWorkItemState : Int4B
-			   +0x488 CompressionLock  : _EX_PUSH_LOCK
-			   +0x490 CompressionTarget : Ptr64 _WMI_BUFFER_HEADER
-			   +0x498 CompressionWorkspace : Ptr64 Void
-			   +0x4a0 CompressionOn    : Int4B
-			   +0x4a4 CompressionRatioGuess : Uint4B
-			   +0x4a8 PartialBufferCompressionLevel : Uint4B
-			   +0x4ac CompressionResumptionMode : ETW_COMPRESSION_RESUMPTION_MODE
-			   +0x4b0 PlaceholderList  : _SINGLE_LIST_ENTRY
-			   +0x4b8 CompressionDpc   : _KDPC
-			   +0x4f8 LastBufferSwitchTime : _LARGE_INTEGER
-			   +0x500 BufferWriteDuration : _LARGE_INTEGER
-			   +0x508 BufferCompressDuration : _LARGE_INTEGER
-			   +0x510 ReferenceQpcDelta : Int8B
-			   +0x518 CallbackContext  : Ptr64 _ETW_EVENT_CALLBACK_CONTEXT
-			   +0x520 LastDroppedTime  : Ptr64 _LARGE_INTEGER
-			   +0x528 FlushingLastDroppedTime : Ptr64 _LARGE_INTEGER
-			   +0x530 FlushingSequenceNumber : Int8B
-	*/
-
 	*reinterpret_cast<uintptr_t*>((uintptr_t)CkclWmiLoggerContext + OFFSET_WMI_LOGGER_CONTEXT_CPU_CYCLE_CLOCK) = 2;
 	
 	// off_140C009E0 pattern
-	UCHAR pattern[] = "\x48\xcc\xcc\xcc\xcc\xcc\xcc\xE8\xcc\xcc\xcc\xcc\x83\xcc\xcc\x75\xcc\x38\xcc\xcc\xcc\xcc\xcc\x75\xcc\x48\xcc\xcc\xcc\xcc\xcc\xcc\x83\xB8\xcc\xcc\xcc\xcc\xcc\x0F\xcc\xcc\xcc\xcc\xcc";
+	//UCHAR pattern[] = "\x48\xcc\xcc\xcc\xcc\xcc\xcc\xE8\xcc\xcc\xcc\xcc\x83\xcc\xcc\x75\xcc\x38\xcc\xcc\xcc\xcc\xcc\x75\xcc\x48\xcc\xcc\xcc\xcc\xcc\xcc\x83\xB8\xcc\xcc\xcc\xcc\xcc\x0F\xcc\xcc\xcc\xcc\xcc";
+	UCHAR pattern[] = "\x48\xcc\xcc\xcc\xcc\xcc\xcc\x48\x85\xC0\x74\xcc\x48\xcc\xcc\xcc\xcc\xcc\xcc\xcc\x74\xcc\xE8\xcc\xcc\xcc\xcc\x48\x8B\xD8\x48\xcc\xcc\xcc\xcc\xcc\xcc\xE8\xcc\xcc\xcc\xcc\x48\x03\xD8\x48\x89\x1F\x33\xC0\xEB\xcc";
 	NTSTATUS status = UtilScanSection(".text", (PCUCHAR)pattern, 0xCC, sizeof(pattern) - 1, (PVOID*)&PtrOff140C009E0);
 	if (!NT_SUCCESS(status))
 	{
-		kprintf("[DebugMessAge] off_140C009E0 not found! :( \n");
+		kprintf("[DebugMessAge] PtrOff140C009E0 not found! :( \n");
 		return false;
 	}
+
+
+	UCHAR pattern_HvlpReferenceTscPage[] = "\x48\xcc\xcc\xcc\xcc\xcc\xcc\x48\x8B\xcc\xcc\x48\xcc\xcc\xcc\xcc\xcc\xcc\x48\xF7\xE2\x4C\x8B\xcc\xcc\x48\xcc\xcc\xcc\xcc\xcc\xcc\x49\x03\xD0\x48\x89\xcc\xcc\xcc\x8B\x08\x41\x3B\xC9\x75\xcc";
+	status = UtilScanSection(".text", (PCUCHAR)pattern_HvlpReferenceTscPage, 0xCC, sizeof(pattern_HvlpReferenceTscPage) - 1, (PVOID*)&HvlpReferenceTscPage);
+	if (!NT_SUCCESS(status))
+	{
+		kprintf("[DebugMessAge] HvlGetQpcBias not found! :( \n");
+		return false;
+	}
+	HvlpReferenceTscPage = HvlpReferenceTscPage + *(ULONG*)(HvlpReferenceTscPage + 3) + 7;
+
+	kprintf("[DebugMessAge] off_140C009E0 %p \n", PtrOff140C009E0);
 	PtrOff140C009E0 = PtrOff140C009E0 + *(ULONG*)(PtrOff140C009E0 + 3) + 7;
-	OldPtrOff140C009E0 = (PFHalpTimerQueryHostPerformanceCounter)(*((ULONG64*)PtrOff140C009E0));
-	*((ULONG64*)PtrOff140C009E0) = (ULONG64)HookHalpTimerQueryHostPerformanceCounter;
+	//OldPtrOff140C009E0 = (PFHalpTimerQueryHostPerformanceCounter)(*((ULONG64*)PtrOff140C009E0));
+	OldPtrOff140C009E0 = (PFHvlGetQpcBias)(*((ULONG64*)PtrOff140C009E0));
+	//*((ULONG64*)PtrOff140C009E0) = (ULONG64)HookHalpTimerQueryHostPerformanceCounter;
+	*((ULONG64*)PtrOff140C009E0) = (ULONG64)HookHvlGetQpcBias;
 
-	/*
-	//
-	// We care about overwriting the GetCpuClock (+0x28) pointer in 
-	// this structure.
-	//
-	PVOID* AddressOfEtwpGetCycleCount = (PVOID*)((uintptr_t)CkclWmiLoggerContext + OFFSET_WMI_LOGGER_CONTEXT_CPU_CYCLE_CLOCK);
-
-	//
-	// Replace this function pointer with our own. Each time syscall
-	// is logged by ETW, it will invoke our new timing function.
-	//
-	*AddressOfEtwpGetCycleCount = IfhpInternalGetCpuClock;
-	*/
 
 	IfhpInitialized = true;
 
